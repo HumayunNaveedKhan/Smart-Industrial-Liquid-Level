@@ -1,0 +1,59 @@
+function doGet(e) {
+  Logger.log(JSON.stringify(e));
+  var result = 'Ok';
+  if (Object.keys(e.parameter).length === 0) {
+    result = 'No Parameters';
+  } else {
+    var sheet_id = '1KD5iBF0STxvIa88DVTnHgH-mFjCHyVLjuQkTXplW9ek'; // Spreadsheet ID
+    var sheet = SpreadsheetApp.openById(sheet_id).getActiveSheet();
+    var newRow = sheet.getLastRow() + 1;
+    var rowData = [];
+
+    var Curr_Date = new Date();
+    var Curr_Time = Utilities.formatDate(Curr_Date, "Asia/Karachi", 'yyyy-MM-dd HH:mm:ss'); // Format date and time
+
+    rowData.push(Curr_Time); // Date and Time in column 1
+
+    var lengthInFeet = parseFloat(e.parameter.value0); // Assuming length recorded in feet
+    if (!isNaN(lengthInFeet)) {
+      rowData.push(lengthInFeet); // Length (feet) in column 2
+    } else {
+      result = "Invalid length parameter";
+      return ContentService.createTextOutput(result);
+    }
+
+    var lengthInInches = lengthInFeet * 12; // Convert feet to inches
+    rowData.push(lengthInInches.toFixed(2)); // Length (inches) in column 3
+
+    var lengthInCms = lengthInInches * 2.54; // Convert inches to centimeters
+    rowData.push(lengthInCms.toFixed(2)); // Length (cm) in column 4
+
+    var label = ""; // Initialize label variable
+
+    if (lengthInFeet >= 0) {
+      if (lengthInFeet <= 3) {
+        label = "Full";
+      } else if (lengthInFeet <= 5) {
+        label = "Almost Full";
+      } else if (lengthInFeet <= 8) {
+        label = "Almost Half";
+      } else if (lengthInFeet <= 11) {
+        label = "Half";
+      } else if (lengthInFeet <= 14) {
+        label = "Less than Half";
+      } else if (lengthInFeet <= 17) {
+        label = "Almost Empty";
+      } else if (lengthInFeet <= 19.6) {
+        label = "Empty";
+      }
+    }
+
+    rowData.push(label); // Push the label to the rowData array
+
+    Logger.log(JSON.stringify(rowData));
+    var newRange = sheet.getRange(newRow, 1, 1, rowData.length);
+    newRange.setValues([rowData]);
+  }
+  return ContentService.createTextOutput(result);
+}
+
