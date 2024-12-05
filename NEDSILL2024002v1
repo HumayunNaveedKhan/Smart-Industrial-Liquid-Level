@@ -1,0 +1,256 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266WebServer.h>
+#include <LittleFS.h>
+#include <Tiny4kOLED.h>
+#include <Arduino.h>
+
+#define PIN_IN1 14 // Trigger pin for ultrasonic sensor
+#define PIN_IN2 12 // Echo pin for ultrasonic sensor
+#define RECORD_FILE "/records.txt"
+#define MAX_RECORDS 50
+
+struct settings {
+  char ssid[30];
+  char password[30];
+} user_wifi = {};
+
+double distance = 0;
+bool wifiConnected = false;
+ESP8266WebServer server(80);
+WiFiClientSecure client;
+
+const char* host = "script.google.com";
+const int httpsPort = 443;
+String GAS_ID = "AKfycbzL6yE9_8zaYX8YYqOFUoTjhpJcaBJ7ZWXyZxU7AGiovsNci2ue8WwQ3vh__MPGHAhkXw";
+
+unsigned long previousMillis = 0;
+const long interval = 3000;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize OLED display
+  oled.begin(128, 64, sizeof(tiny4koled_init_128x64br), tiny4koled_init_128x64br);
+  oled.on();
+  oled.setRotation(1);
+  oled.setFont(FONT8X16);
+  oled.clear();
+  oled.setCursor(30, 3);
+  oled.print("NED-ILLM");
+  delay(2000);
+  oled.clear();
+
+  // Initialize pins
+  pinMode(PIN_IN1, OUTPUT);
+  pinMode(PIN_IN2, INPUT);
+
+  // Initialize LittleFS
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS Mount Failed");
+    oled.setCursor(0, 10);
+    oled.print("FS Error!");
+    while (true);
+  }
+
+  // Load Wi-Fi credentials
+  File wifiFile = LittleFS.open("/wifi.txt", "r");
+  if (wifiFile) {
+    String ssid = wifiFile.readStringUntil('\n');
+    String password = wifiFile.readStringUntil('\n');
+    strncpy(user_wifi.ssid, ssid.c_str(), sizeof(user_wifi.ssid));
+    strncpy(user_wifi.password, password.c_str(), sizeof(user_wifi.password));
+    wifiFile.close();
+  }
+
+  // Start Wi-Fi or AP
+  if (strlen(user_wifi.ssid) > 0) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(user_wifi.ssid, user_wifi.password);
+    connectToWiFi();
+  } else {
+    startAccessPoint();
+  }
+
+  // Start web server
+  server.on("/", handlePortal);
+  server.begin();
+
+  oled.setCursor(30, 10);
+  oled.print("Initializing...");
+  delay(1000);
+  oled.clear();
+}
+
+void loop() {
+  if (WiFi.getMode() == WIFI_AP) {
+    server.handleClient();
+  }
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    measureDistance();
+
+    if (wifiConnected) {
+      sendDataToGoogleSheets(distance);
+      sendStoredData();
+    }
+
+    updateDisplay();
+  }
+}
+
+void measureDistance() {
+  long duration;
+  digitalWrite(PIN_IN1, LOW);
+  delayMicroseconds(2);
+  digitalWrite(PIN_IN1, HIGH);
+  delayMicroseconds(300);
+  digitalWrite(PIN_IN1, LOW);
+
+  duration = pulseIn(PIN_IN2, HIGH);
+  distance = duration * 0.034 / 2; // Distance in cm
+}
+
+void storeDistanceLocally(double value) {
+  File recordFile = LittleFS.open(RECORD_FILE, "a");
+  if (recordFile) {
+    recordFile.println(value);
+    recordFile.close();
+    Serial.println("Stored locally: " + String(value));
+  } else {
+    Serial.println("Failed to open record file");
+  }
+}
+
+void sendStoredData() {
+  File recordFile = LittleFS.open(RECORD_FILE, "r");
+  if (recordFile) {
+    while (recordFile.available()) {
+      String value = recordFile.readStringUntil('\n');
+      sendDataToGoogleSheets(value.toDouble());
+      delay(500);
+    }
+    recordFile.close();
+    LittleFS.remove(RECORD_FILE);
+  }
+}
+
+bool sendDataToGoogleSheets(double measurement) {
+  if (!client.connect(host, httpsPort)) {
+    return false;
+  }
+
+  String url = "/macros/s/" + GAS_ID + "/exec?value0=" + String(measurement);
+  client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" +
+               "User-Agent: ESP8266\r\n" +
+               "Connection: close\r\n\r\n");
+
+  Serial.println("Sent to Google Sheets: " + String(measurement));
+  return true;
+}
+
+void updateDisplay() {
+  oled.clear();
+  oled.setFont(FONT6X8);  // Use the smaller font for status information
+
+  // Display WiFi status with horizontal offset of +2, vertical offset of -2
+  if (wifiConnected) {
+    oled.setCursor(2, -2);  // Offset applied here
+    oled.print("WiFi: Conn!");
+  } else {
+    oled.setCursor(2, -2);  // Offset applied here
+    oled.print("WiFi: DisConn!");
+  }
+
+  oled.setFont(FONT8X16);  // Larger font for the distance value
+  oled.setCursor(2, 18);   // Offset applied here
+  oled.print(String(distance, 2) + " cm");
+}
+
+void handlePortal() {
+  if (server.method() == HTTP_POST) {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+
+    File wifiFile = LittleFS.open("/wifi.txt", "w");
+    if (wifiFile) {
+      wifiFile.println(ssid);
+      wifiFile.println(password);
+      wifiFile.close();
+    }
+
+    server.send(200, "text/html", "<h1>Settings Saved! Restart Device.</h1>");
+    delay(1000);
+    ESP.restart();
+  } else {
+    server.send(200, "text/html", R"rawliteral(
+      <!doctype html>
+      <html>
+      <head>
+        <title>NED-ILLM</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; }
+          form { margin: 20px; }
+          label, input { display: block; margin: 10px; }
+        </style>
+      </head>
+      <body>
+        <h1>WiFi Setup</h1>
+        <form method="POST" action="/">
+          <label>SSID:</label>
+          <input type="text" name="ssid">
+          <label>Password:</label>
+          <input type="password" name="password">
+          <button type="submit">Save</button>
+        </form>
+      </body>
+      </html>
+    )rawliteral");
+  }
+}
+
+void startAccessPoint() {
+  WiFi.mode(WIFI_AP);
+  const char* apSSID = "NED-ILLM-Setup";
+  const char* apPassword = "password";
+  WiFi.softAP(apSSID, apPassword);
+
+  IPAddress ip = WiFi.softAPIP();
+  oled.clear();
+  oled.setCursor(2, -2);
+  oled.print("AP Mode Active");
+  oled.setCursor(2, 8); // Offset applied here
+  oled.print("SSID: " + String(apSSID));
+  oled.setCursor(2, 18); // Offset applied here
+  oled.print("IP: " + ip.toString());
+}
+
+void connectToWiFi() {
+  oled.clear();
+  oled.setCursor(2, -2); // Offset applied here
+  oled.print("Connecting...");
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts++ < 40) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    oled.clear();
+    oled.setCursor(2, -2); // Offset applied here
+    oled.print("WiFi: Connected!");
+    oled.setCursor(2, 18); // Offset applied here
+    oled.print("IP: " + WiFi.localIP().toString());
+  } else {
+    wifiConnected = false;
+    oled.clear();
+    oled.setCursor(2, -2); // Offset applied here
+    oled.print("WiFi: DisConn!");
+  }
+}
