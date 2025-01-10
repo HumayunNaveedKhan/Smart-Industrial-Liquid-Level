@@ -1,0 +1,219 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <EEPROM.h>
+#include <ESP8266WebServer.h>
+#include <Tiny4kOLED.h>
+
+// Pins
+#define PIN_IN1 14 // Trigger pin for ultrasonic sensor
+#define PIN_IN2 12 // Echo pin for ultrasonic sensor
+
+// Wi-Fi Credentials
+#define EEPROM_SIZE 96 // Enough to store two strings (SSID and Password)
+char storedSSID[32] = ""; // Stored SSID
+char storedPassword[64] = ""; // Stored Password
+const char* defaultSSID = "CoatsEmployee"; // Default SSID
+const char* defaultPassword = "Coats@1234"; // Default Password
+
+// Flags and Variables
+bool wifiConnected = false;
+double distance = 0;
+ESP8266WebServer server(80);
+WiFiClientSecure client;
+
+// Constants
+const char* host = "script.google.com";
+const int httpsPort = 443;
+String GAS_ID = "AKfycbxQWPcQQWIC7ZKKwZodd1e7lqPcqmkUvEyBZJtA7PCztU5LDZ_hcFYeBEAvdKWQeyGNbA";
+unsigned long previousMillis = 0;
+const long interval = 3000; // 5 minutes
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize OLED
+  oled.begin(128, 64, sizeof(tiny4koled_init_128x64br), tiny4koled_init_128x64br);
+  oled.on();
+  oled.setRotation(1);
+  oled.setFont(FONT8X16);
+  oled.clear();
+  oled.setCursor(30, 3);
+  oled.print("NED-SILL");
+  delay(2000);
+  oled.clear();
+
+  pinMode(PIN_IN1, OUTPUT);
+  pinMode(PIN_IN2, INPUT);
+
+  // Initialize EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+
+  // Load stored Wi-Fi credentials
+  loadWiFiCredentials();
+
+  // Try to connect to Wi-Fi
+  connectToWiFi();
+
+  if (!wifiConnected) {
+    startAccessPoint(); // Start AP mode if no Wi-Fi connection
+  }
+}
+
+void loop() {
+  if (WiFi.getMode() == WIFI_AP) {
+    server.handleClient();
+  } else {
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+
+      measureDistance();
+      if (wifiConnected) {
+        sendDataToGoogleSheets(distance);
+        displayLabel(distance);
+      }
+    }
+  }
+}
+
+void measureDistance() {
+  digitalWrite(PIN_IN1, LOW);
+  delayMicroseconds(2);
+  digitalWrite(PIN_IN1, HIGH);
+  delayMicroseconds(300);
+  digitalWrite(PIN_IN1, LOW);
+
+  long duration = pulseIn(PIN_IN2, HIGH);
+  distance = (duration * 0.034 / 2) / (2.54 * 12); // Distance in feet
+}
+
+void displayLabel(double distance) {
+  String label = (distance < 1.5) ? "Full" : (distance <= 3) ? "Almost Full"
+                 : (distance <= 4) ? "Almost Half" : (distance <= 5) ? "Half"
+                 : (distance <= 6) ? "Less than Half" : (distance <= 8) ? "Almost Empty"
+                 : (distance <= 14) ? "Empty" : "Unknown";
+
+  oled.clear();
+  oled.setFont(FONT6X8);
+  oled.setCursor(90, 0);
+  oled.print(wifiConnected ? "Conn!" : "DisConn!");
+  oled.setFont(FONT8X16);
+  oled.setCursor(10, 18);
+  oled.print(distance, 2);
+  oled.print(" ft");
+  oled.setCursor(10, 30);
+  oled.print(label);
+}
+
+bool sendDataToGoogleSheets(double measurement) {
+  if (!client.connect(host, httpsPort)) {
+    return false;
+  }
+
+  String url = "/macros/s/" + GAS_ID + "/exec?value0=" + String(measurement);
+  client.print(String("GET ") + url + " HTTP/1.1\r\nHost: " + host +
+               "\r\nUser-Agent: ESP8266\r\nConnection: close\r\n\r\n");
+  return true;
+}
+
+void connectToWiFi() {
+  oled.clear();
+  oled.setCursor(5, 10);
+  oled.print("Connecting...");
+
+  // Attempt to connect using stored or default credentials
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(strlen(storedSSID) > 0 ? storedSSID : defaultSSID,
+             strlen(storedSSID) > 0 ? storedPassword : defaultPassword);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    oled.setCursor(5, 20);
+    oled.print("Attempt: " + String(attempts + 1));
+    attempts++;
+  }
+
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
+  if (wifiConnected) {
+    oled.clear();
+    oled.setCursor(5, 10);
+    oled.print("Wi-Fi Connected");
+    client.setInsecure();
+    delay(1000);
+  } else {
+    oled.clear();
+    oled.setCursor(5, 10);
+    oled.print("Wi-Fi Failed");
+    delay(1000);
+  }
+}
+
+void startAccessPoint() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("NED-SILL-Setup", "00000000");
+
+  IPAddress ip = WiFi.softAPIP();
+  oled.clear();
+  oled.setFont(FONT6X8);
+  oled.setCursor(5, 14);
+  oled.print("AP Mode");
+  oled.setCursor(5, 10);
+  oled.print("PW: 00000000");
+  oled.setCursor(5, 24);
+  oled.print("SSID: NED-SILL-Setup");
+  oled.setCursor(5, 12);
+  oled.print("IP: " + ip.toString());
+
+  server.on("/", handlePortal);
+  server.begin();
+}
+
+void handlePortal() {
+  if (server.method() == HTTP_POST) {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+
+    // Save the credentials to EEPROM
+    strncpy(storedSSID, ssid.c_str(), sizeof(storedSSID));
+    strncpy(storedPassword, password.c_str(), sizeof(storedPassword));
+    saveWiFiCredentials();
+
+    server.send(200, "text/html", "<h1>Settings Saved! Restarting...</h1>");
+    delay(1000);
+    ESP.restart();
+  } else {
+    server.send(200, "text/html", R"rawliteral(
+      <!doctype html>
+      <html>
+      <body>
+        <h1>Wi-Fi Setup</h1>
+        <form method="POST" action="/">
+          <label>SSID:</label><input type="text" name="ssid"><br>
+          <label>Password:</label><input type="password" name="password"><br>
+          <button type="submit">Save</button>
+        </form>
+      </body>
+      </html>
+    )rawliteral");
+  }
+}
+
+void loadWiFiCredentials() {
+  for (int i = 0; i < sizeof(storedSSID); i++) {
+    storedSSID[i] = char(EEPROM.read(i));
+  }
+  for (int i = 0; i < sizeof(storedPassword); i++) {
+    storedPassword[i] = char(EEPROM.read(i + sizeof(storedSSID)));
+  }
+}
+
+void saveWiFiCredentials() {
+  for (int i = 0; i < sizeof(storedSSID); i++) {
+    EEPROM.write(i, storedSSID[i]);
+  }
+  for (int i = 0; i < sizeof(storedPassword); i++) {
+    EEPROM.write(i + sizeof(storedSSID), storedPassword[i]);
+  }
+  EEPROM.commit();
+}
