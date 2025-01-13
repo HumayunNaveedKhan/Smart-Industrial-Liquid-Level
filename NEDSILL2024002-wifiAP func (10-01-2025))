@@ -26,56 +26,65 @@ const char* host = "script.google.com";
 const int httpsPort = 443;
 String GAS_ID = "AKfycbxQWPcQQWIC7ZKKwZodd1e7lqPcqmkUvEyBZJtA7PCztU5LDZ_hcFYeBEAvdKWQeyGNbA";
 unsigned long previousMillis = 0;
-const long interval = 3000; // 5 minutes
+const long interval = 60000; // 5 minutes
 
 void setup() {
-  Serial.begin(115200);
+    Serial.begin(115200);
 
-  // Initialize OLED
-  oled.begin(128, 64, sizeof(tiny4koled_init_128x64br), tiny4koled_init_128x64br);
-  oled.on();
-  oled.setRotation(1);
-  oled.setFont(FONT8X16);
-  oled.clear();
-  oled.setCursor(30, 3);
-  oled.print("NED-SILL");
-  delay(2000);
-  oled.clear();
+    // Initialize OLED
+    oled.begin(128, 64, sizeof(tiny4koled_init_128x64br), tiny4koled_init_128x64br);
+    oled.on();
+    oled.setRotation(1);
+    oled.setFont(FONT8X16);
+    oled.clear();
+    oled.setCursor(30, 3);
+    oled.print("NED-SILL");
+    delay(2000);
+    oled.clear();
 
-  pinMode(PIN_IN1, OUTPUT);
-  pinMode(PIN_IN2, INPUT);
+    pinMode(PIN_IN1, OUTPUT);
+    pinMode(PIN_IN2, INPUT);
 
-  // Initialize EEPROM
-  EEPROM.begin(EEPROM_SIZE);
+    // Initialize EEPROM
+    EEPROM.begin(EEPROM_SIZE);
 
-  // Load stored Wi-Fi credentials
-  loadWiFiCredentials();
+    // Load stored Wi-Fi credentials
+    loadWiFiCredentials();
 
-  // Try to connect to Wi-Fi
-  connectToWiFi();
+    // Try connecting to Wi-Fi
+    connectToWiFi();
 
-  if (!wifiConnected) {
-    startAccessPoint(); // Start AP mode if no Wi-Fi connection
-  }
+    // If no Wi-Fi connection, start AP mode with a time limit
+    if (!wifiConnected) {
+        unsigned long apStartTime = millis(); // Record the start time
+        while (millis() - apStartTime < 20000) { // Run AP mode for 10 seconds
+            startAccessPoint();
+            server.handleClient(); // Handle any client requests during AP mode
+            delay(1000); // Wait 1 second per iteration
+        }
+        oled.clear();
+        oled.setFont(FONT6X8);
+        oled.setCursor(20, 30);
+        oled.print("Exiting AP Mode...");
+        delay(2000);
+    }
 }
 
 void loop() {
-  if (WiFi.getMode() == WIFI_AP) {
-    server.handleClient();
-  } else {
     unsigned long currentMillis = millis();
+
     if (currentMillis - previousMillis >= interval) {
-      previousMillis = currentMillis;
+        previousMillis = currentMillis;
 
-      measureDistance();
-      if (wifiConnected) {
-        sendDataToGoogleSheets(distance);
-        displayLabel(distance);
-      }
+        measureDistance();
+
+        if (wifiConnected) {
+            sendDataToGoogleSheets(distance); // Send data if Wi-Fi is connected
+        }
+
+        displayLabel(distance); // Always display the label
     }
-  }
 }
-
 void measureDistance() {
   digitalWrite(PIN_IN1, LOW);
   delayMicroseconds(2);
@@ -117,37 +126,41 @@ bool sendDataToGoogleSheets(double measurement) {
 }
 
 void connectToWiFi() {
-  oled.clear();
-  oled.setCursor(5, 10);
-  oled.print("Connecting...");
-
-  // Attempt to connect using stored or default credentials
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(strlen(storedSSID) > 0 ? storedSSID : defaultSSID,
-             strlen(storedSSID) > 0 ? storedPassword : defaultPassword);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    oled.setCursor(5, 20);
-    oled.print("Attempt: " + String(attempts + 1));
-    attempts++;
-  }
-
-  wifiConnected = (WiFi.status() == WL_CONNECTED);
-  if (wifiConnected) {
     oled.clear();
     oled.setCursor(5, 10);
-    oled.print("Wi-Fi Connected");
-    client.setInsecure();
-    delay(1000);
-  } else {
-    oled.clear();
-    oled.setCursor(5, 10);
-    oled.print("Wi-Fi Failed");
-    delay(1000);
-  }
+    oled.print("Connecting...");
+
+    // Attempt to connect using stored or default credentials
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(strlen(storedSSID) > 0 ? storedSSID : defaultSSID,
+               strlen(storedSSID) > 0 ? storedPassword : defaultPassword);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        oled.setCursor(5, 20);
+        oled.print("Attempt: " + String(attempts + 1));
+        attempts++;
+    }
+
+    wifiConnected = (WiFi.status() == WL_CONNECTED);
+
+    if (wifiConnected) {
+        oled.clear();
+        oled.setCursor(5, 10);
+        oled.print("Wi-Fi Connected");
+        delay(2000); // Show for 2 seconds
+        oled.clear(); // Clear after showing the message
+        client.setInsecure();
+    } else {
+        oled.clear();
+        oled.setCursor(5, 10);
+        oled.print("Wi-Fi Failed");
+        delay(2000); // Show for 2 seconds
+        oled.clear(); // Clear after showing the message
+    }
 }
+
 
 void startAccessPoint() {
   WiFi.mode(WIFI_AP);
