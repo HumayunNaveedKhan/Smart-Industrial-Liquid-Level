@@ -83,6 +83,8 @@ void loop() {
         }
 
         displayLabel(distance); // Always display the label
+      updateWiFiStatus();
+      delay(interval);
     }
 }
 void measureDistance() {
@@ -103,9 +105,9 @@ void displayLabel(double distance) {
                  : (distance <= 14) ? "Empty" : "Unknown";
 
   oled.clear();
-  oled.setFont(FONT6X8);
-  oled.setCursor(90, 0);
-  oled.print(wifiConnected ? "Conn!" : "DisConn!");
+  //oled.setFont(FONT6X8);
+  //oled.setCursor(90, 0);
+  //oled.print(wifiConnected ? "Conn!" : "DisConn!");
   oled.setFont(FONT8X16);
   oled.setCursor(10, 18);
   oled.print(distance, 2);
@@ -367,4 +369,16 @@ void saveWiFiCredentials() {
     EEPROM.write(i + sizeof(storedSSID), storedPassword[i]);
   }
   EEPROM.commit();
+}
+void updateWiFiStatus() {
+  // Update the Wi-Fi status on OLED
+  //oled.clear();
+  oled.setFont(FONT6X8);
+  oled.setCursor(70, 0);
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    oled.print("Conn!"); // Wi-Fi is connected
+  } else {
+    oled.print("DisConn!"); // Wi-Fi is disconnected
+  }
 }
